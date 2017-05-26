@@ -1,13 +1,12 @@
 package main
 
 import (
-	"bytes"
-	"fmt"
-	"io"
+	"flag"
 	"io/ioutil"
 	"log"
 	"os"
 	"strings"
+	"time"
 
 	"gopkg.in/goose.v2/client"
 	"gopkg.in/goose.v2/identity"
@@ -19,6 +18,12 @@ var (
 )
 
 func main() {
+	container := flag.String("c", "", "container name")
+	oname := flag.String("o", "", "object name")
+	flag.Parse()
+	if *oname == "" || *container == "" {
+		log.Print("use -o and -c")
+	}
 	logger := log.New(os.Stderr, "", log.LstdFlags)
 	// don't validate ssl, just testing.
 	//c := client.NewNonValidatingClient(&identity.Credentials{
@@ -32,22 +37,24 @@ func main() {
 		identity.AuthLegacy,
 		logger)
 	s := swift.New(c)
-	data := "test1 content"
-	err := s.PutReader("t", "test1", bytes.NewReader([]byte(data)), int64(len(data)))
+	log.Print("reading ", *container, *oname, "with Reader")
+	start := time.Now()
+	req2, _, err := s.GetReadHandle(*container, *oname)
 	if err != nil {
-		log.Print("failed to put to test1:", err)
+		log.Print("failed to get handle to ", *oname, err)
 	}
-	req2, headers, err := s.GetReadHandle("t", "README.md")
-	if err != nil {
-		log.Print("failed to get handle to README.md:", err)
-	}
-	log.Print("headers:", headers)
-	req2.Seek(500, io.SeekCurrent)
-	d, err := ioutil.ReadAll(req2)
+	_, err = ioutil.ReadAll(req2)
 	if err != nil {
 		log.Print("failed to read handle for README.md:", err)
 	}
-	fmt.Println("read:", string(d))
+	log.Print("done in ", time.Now().Sub(start)/time.Millisecond, "ms")
+	log.Print("reading one request")
+	start = time.Now()
+	_, err = s.GetObject(*container, *oname)
+	if err != nil {
+		log.Print("failed to get handle to ", *oname, err)
+	}
+	log.Print("done in ", time.Now().Sub(start)/time.Millisecond, "ms")
 
 	return
 }
