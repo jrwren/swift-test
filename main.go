@@ -6,6 +6,7 @@ import (
 	"compress/flate"
 	"flag"
 	"io"
+	"io/ioutil"
 	"log"
 	"os"
 	"strconv"
@@ -23,20 +24,27 @@ var (
 )
 
 func main() {
+	authURL := flag.String("A", "", "auth URL, OS_AUTH_URL is also used.")
 	container := flag.String("c", "", "container name")
 	oname := flag.String("o", "", "object name")
 	n := flag.Int("n", 1, "number of times to do each operation")
-	//z := flag.String("z", "", "unzip a file by a name from a zip file. alt: colon prefix with its offset and size e.g. 10:20:myfile")
+	z := flag.String("z", "", "unzip a file by a name from a zip file. alt: colon prefix with its offset and size e.g. 10:20:myfile")
 	l := flag.String("l", "", "list zip contents")
 	flag.Parse()
 	if *oname == "" || *container == "" {
 		log.Print("use -o and -c")
 	}
+	if *authURL == "" {
+		*authURL = os.Getenv("OS_AUTH_URL")
+	}
+	if *authURL == "" {
+		*authURL = "http://127.0.0.1:8080/auth/v1.0"
+	}
 	logger := log.New(os.Stderr, "", log.LstdFlags)
 	// don't validate ssl, just testing.
 	//c := client.NewNonValidatingClient(&identity.Credentials{
 	c := client.NewClient(&identity.Credentials{
-		URL:     "http://10.0.5.171:8080/auth/v1.0",
+		URL:     *authURL,
 		User:    "admin:admin",
 		Secrets: "admin",
 		//		TenantName: "admin", // or UserDomain, or ProjectDomain and docs are useless.
@@ -59,8 +67,13 @@ func main() {
 			listZipContents(req2, size)
 		}
 		if *z != "" {
-			offset, size := getOffsetAndSize(z)
-			r := extractFile(req2, offset, size)
+			offset, size := getOffsetAndSize(*z)
+			r, err := ZipFileReader(req2, offset, size, true)
+			if err != nil {
+				log.Print("ZipFileReader error:", err)
+			}
+			c, err := ioutil.ReadAll(r)
+			log.Print(string(c))
 		}
 		// always 8k blocks from Discard/ReadFrom
 		//_, err = ioutil.Discard.(io.ReaderFrom).ReadFrom(req2)
@@ -80,14 +93,20 @@ func main() {
 		if err != nil {
 			log.Print("failed to convert size:", err)
 		}
+		var buf bytes.Buffer
+		buf.ReadFrom(r)
+		r2 := bytes.NewReader(buf.Bytes())
 		if *l != "" {
-			var buf bytes.Buffer
-			buf.ReadFrom(r)
-			listZipContents(bytes.NewReader(buf.Bytes()), size)
+			listZipContents(r2, size)
 		}
 		if *z != "" {
-			offset, size := getOffsetAndSize(z)
-			r := extractFile(req2, offset, size)
+			offset, size := getOffsetAndSize(*z)
+			r, err := ZipFileReader(r2, offset, size, true)
+			if err != nil {
+				log.Print("ZipFileReader error:", err)
+			}
+			c, err := ioutil.ReadAll(r)
+			log.Print(string(c))
 		}
 	}
 	log.Print("done in ", time.Now().Sub(start))
@@ -95,9 +114,17 @@ func main() {
 	return
 }
 
-func getOffsetAndSize(z string) {
+func getOffsetAndSize(z string) (offset, size int64) {
 	zs := strings.Split(z, ":")
-	return zs[0], zs[1]
+	offset, err := strconv.ParseInt(zs[0], 10, 64)
+	if err != nil {
+		log.Print("could not parse offset:", offset)
+	}
+	size, err = strconv.ParseInt(zs[1], 10, 64)
+	if err != nil {
+		log.Print("could not parse size:", size)
+	}
+	return
 }
 
 func listZipContents(r io.ReadSeeker, size int64) {
