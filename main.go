@@ -2,7 +2,6 @@ package main
 
 import (
 	"archive/zip"
-	"bytes"
 	"compress/flate"
 	"flag"
 	"io"
@@ -14,9 +13,9 @@ import (
 	"time"
 
 	"gopkg.in/errgo.v1"
-	"gopkg.in/goose.v2/client"
-	"gopkg.in/goose.v2/identity"
-	"gopkg.in/goose.v2/swift"
+	"gopkg.in/mgo.v2"
+
+	"github.com/juju/blobstore"
 )
 
 var (
@@ -24,47 +23,50 @@ var (
 )
 
 func main() {
-	authURL := flag.String("A", "", "auth URL, OS_AUTH_URL is also used.")
-	container := flag.String("c", "", "container name")
+	authURL := flag.String("A", "", "mongourl")
+	container := flag.String("c", "", "prefix name")
 	oname := flag.String("o", "", "object name")
 	n := flag.Int("n", 1, "number of times to do each operation")
 	z := flag.String("z", "", "unzip a file by a name from a zip file. alt: colon prefix with its offset and size e.g. 10:20:myfile")
 	l := flag.String("l", "", "list zip contents")
+	p := flag.String("p", "", "put file")
 	flag.Parse()
+	if *authURL == "" {
+		*authURL = "127.0.0.1"
+	}
+	session, err := mgo.Dial(*authURL)
+	if err != nil {
+		log.Print("could not dial ", *authURL, ":", err)
+	}
+	db := session.DB("test")
+	rs := blobstore.NewGridFS(db.Name, *container, db.Session)
+	s := blobstore.NewManagedStorage(db, rs)
+	if *p != "" {
+		f, err := os.Open(*p)
+		if err != nil {
+			log.Print("error opening ", *p, ":", err)
+		}
+		st, err := f.Stat()
+		if err != nil {
+			log.Print("error stating ", *p, ":", err)
+		}
+		s.PutForEnvironment("", *p, f, st.Size())
+		return
+	}
 	if *oname == "" || *container == "" {
 		log.Print("use -o and -c")
+		return
 	}
-	if *authURL == "" {
-		*authURL = os.Getenv("OS_AUTH_URL")
-	}
-	if *authURL == "" {
-		*authURL = "http://127.0.0.1:8080/auth/v1.0"
-	}
-	logger := log.New(os.Stderr, "", log.LstdFlags)
-	// don't validate ssl, just testing.
-	//c := client.NewNonValidatingClient(&identity.Credentials{
-	c := client.NewClient(&identity.Credentials{
-		URL:     *authURL,
-		User:    "admin:admin",
-		Secrets: "admin",
-		//		TenantName: "admin", // or UserDomain, or ProjectDomain and docs are useless.
-	},
-		identity.AuthLegacy,
-		logger)
-	s := swift.New(c)
 	log.Print("reading ", *container, *oname, "with Reader")
 	start := time.Now()
 	for i := 0; i < *n; i++ {
-		req2, m, err := s.GetReadHandle(*container, *oname)
+		r, length, err := s.GetForEnvironment("", *oname)
 		if err != nil {
 			log.Print("failed to get handle to ", *oname, err)
 		}
-		size, err := strconv.ParseInt(m.Get("Content-Length"), 10, 64)
-		if err != nil {
-			log.Print("failed to convert size:", err)
-		}
+		req2 := r.(io.ReadSeeker)
 		if *l != "" {
-			listZipContents(req2, size)
+			listZipContents(req2, length)
 		}
 		if *z != "" {
 			offset, size := getOffsetAndSize(*z)
@@ -79,34 +81,6 @@ func main() {
 		//_, err = ioutil.Discard.(io.ReaderFrom).ReadFrom(req2)
 		if err != nil {
 			log.Print("failed to read handle for README.md:", err)
-		}
-	}
-	log.Print("done in ", time.Now().Sub(start))
-	log.Print("reading one request")
-	start = time.Now()
-	for i := 0; i < *n; i++ {
-		r, m, err := s.GetReader(*container, *oname)
-		if err != nil {
-			log.Print("failed to get handle to ", *oname, err)
-		}
-		size, err := strconv.ParseInt(m.Get("Content-Length"), 10, 64)
-		if err != nil {
-			log.Print("failed to convert size:", err)
-		}
-		var buf bytes.Buffer
-		buf.ReadFrom(r)
-		r2 := bytes.NewReader(buf.Bytes())
-		if *l != "" {
-			listZipContents(r2, size)
-		}
-		if *z != "" {
-			offset, size := getOffsetAndSize(*z)
-			r, err := ZipFileReader(r2, offset, size, true)
-			if err != nil {
-				log.Print("ZipFileReader error:", err)
-			}
-			c, err := ioutil.ReadAll(r)
-			log.Print(string(c))
 		}
 	}
 	log.Print("done in ", time.Now().Sub(start))
